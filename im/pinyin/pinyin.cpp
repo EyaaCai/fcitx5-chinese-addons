@@ -2434,8 +2434,14 @@ void PinyinEngine::updateT9UI(InputContext *inputContext) {
 
     // Prefix matching keeps candidates visible while the user is still typing,
     // which is what makes single key prediction usable.
+    //
+    // The pool has to be much larger than one page: many syllable splits of a
+    // short digit sequence each contribute hits, and the ranking below is what
+    // decides which of them the user actually sees. Truncating during
+    // collection instead would keep whichever split the graph walk happened to
+    // reach first.
     const auto matches =
-        t9Index_.query(*ime_->dict(), ime_->model(), digits, true, 100);
+        t9Index_.query(*ime_->dict(), ime_->model(), digits, true, 4000);
     for (const auto &match : matches) {
         candidateList->append<PinyinT9CandidateWord>(this, match.word,
                                                      match.encodedPinyin);

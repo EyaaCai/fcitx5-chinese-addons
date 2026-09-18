@@ -21,13 +21,14 @@ namespace fcitx {
 namespace {
 
 /**
- * Separator used between syllables in the encoded dictionary key.
+ * Separator used between the encoded pinyin and the word in a dictionary key,
+ * and after the pinyin of a complete entry.
  *
  * Mirrors libime's file local pinyinHanziSep (pinyindictionary.cpp), which is
  * not exported, so the value has to be repeated here. Must stay in sync when
  * the libime submodule is updated.
  */
-constexpr char encodedSyllableSep = '!';
+constexpr char encodedWordSep = '!';
 
 /// Upper bound on the digit sequence accepted by one query.
 constexpr size_t maxDigits = 32;
@@ -46,12 +47,19 @@ struct LookupTable {
     size_t maxSyllableDigits = 0;
 };
 
-/// Encode one syllable the same way the dictionary key does.
+/**
+ * Encode one syllable as the dictionary stores it: two bytes, initial then
+ * final.
+ *
+ * The separator that follows in the dictionary key is deliberately not
+ * included. PinyinDictionary::matchWords validates its input with
+ * isValidUserPinyin, which requires an even number of bytes, so the pinyin it
+ * receives must be syllables only.
+ */
 std::string encodeSyllable(const libime::PinyinEntry &entry) {
     std::string encoded;
     encoded.push_back(static_cast<char>(entry.initial()));
     encoded.push_back(static_cast<char>(entry.final()));
-    encoded.push_back(encodedSyllableSep);
     return encoded;
 }
 
@@ -129,11 +137,9 @@ std::string dedupKey(const std::string &encodedPinyin,
     return key;
 }
 
-/// Number of syllables in an encoded pinyin, i.e. how many boundaries it has.
+/// Number of syllables in an encoded pinyin, at two bytes each.
 size_t syllableCount(const std::string &encodedPinyin) {
-    return static_cast<size_t>(
-        std::count(encodedPinyin.begin(), encodedPinyin.end(),
-                   encodedSyllableSep));
+    return encodedPinyin.size() / 2;
 }
 
 /**
@@ -155,18 +161,20 @@ void collect(const libime::PinyinDictionary &dictionary, std::string_view digits
         if (result.size() >= maxResult) {
             return false;
         }
-        // A prefix match must end exactly on a syllable boundary, otherwise
-        // 64 would also "match" 644 (ni -> ni'...).
-        if (encodedPinyin.size() < encoded.size()) {
+        // A partial match must be a whole number of syllables, otherwise 64
+        // would also "match" 644 (ni -> ni'...). The pinyin part stops at the
+        // separator that precedes the word, so an even length means the match
+        // ended exactly on a syllable boundary.
+        if (encodedPinyin.size() < encoded.size() ||
+            (prefix && encodedPinyin.size() % 2 != 0)) {
             return true;
         }
-        if (!prefix &&
-            (encodedPinyin.size() != encoded.size() ||
-             encodedPinyin != encoded)) {
+        // Either the whole sequence matched, or, when prefix matching is on, a
+        // longer entry whose start is exactly the pinyin that was looked up.
+        if (encodedPinyin.substr(0, encoded.size()) != encoded) {
             return true;
         }
-        if (prefix && encodedPinyin.size() > encoded.size() &&
-            encodedPinyin[encoded.size()] != encodedSyllableSep) {
+        if (!prefix && encodedPinyin.size() != encoded.size()) {
             return true;
         }
         auto key = dedupKey(std::string(encodedPinyin), std::string(word));
@@ -363,6 +371,7 @@ T9Index::query(const libime::PinyinDictionary &dictionary,
                   }
                   return lhs.word < rhs.word;
               });
+
     return result;
 }
 

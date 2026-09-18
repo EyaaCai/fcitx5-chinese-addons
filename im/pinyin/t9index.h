@@ -22,8 +22,9 @@ namespace fcitx {
  * can hold incomplete entries.
  */
 struct T9Candidate {
-    /// Encoded pinyin of the matched entry, same encoding as the dictionary
-    /// key (two bytes per syllable plus a separator).
+    /// Encoded pinyin of the matched entry: two bytes per syllable, initial
+    /// then final, with no separator. This is a prefix of the pinyin part of
+    /// the dictionary key and is accepted by the context's selectCustom().
     std::string encodedPinyin;
     /// The word itself.
     std::string word;
