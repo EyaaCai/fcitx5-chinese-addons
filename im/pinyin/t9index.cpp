@@ -118,7 +118,7 @@ std::vector<SyllableEdge> edgesFor(std::string_view digits) {
     return edges;
 }
 
-using Match = T9Index::Match;
+using Match = T9Candidate;
 
 /// Key used to drop entries reached through more than one syllable split.
 std::string dedupKey(const std::string &encodedPinyin,
@@ -127,6 +127,13 @@ std::string dedupKey(const std::string &encodedPinyin,
     key.push_back('\0');
     key.append(word);
     return key;
+}
+
+/// Number of syllables in an encoded pinyin, i.e. how many boundaries it has.
+size_t syllableCount(const std::string &encodedPinyin) {
+    return static_cast<size_t>(
+        std::count(encodedPinyin.begin(), encodedPinyin.end(),
+                   encodedSyllableSep));
 }
 
 /**
@@ -170,6 +177,9 @@ void collect(const libime::PinyinDictionary &dictionary, std::string_view digits
         match.encodedPinyin = encodedPinyin;
         match.word = word;
         match.cost = cost;
+        match.consumedDigits = position;
+        match.remainingDigits = digits.size() - position;
+        match.matchLevel = match.remainingDigits == 0 ? 0 : 1;
         result.push_back(std::move(match));
         return true;
     };
@@ -198,6 +208,46 @@ void collect(const libime::PinyinDictionary &dictionary, std::string_view digits
             encoded.resize(encoded.size() - syllable.size());
         }
     }
+}
+
+/**
+ * Score one candidate.
+ *
+ * Match quality (matchLevel and coverage) is handled by the sort comparator
+ * and deliberately not folded into this number, so that the add-on terms below
+ * can never outrank a better match layer.
+ */
+double scoreCandidate(const Match &candidate,
+                      const libime::LanguageModelBase *model) {
+    // Number of digits covered by this match. Higher is better.
+    double score = static_cast<double>(candidate.consumedDigits) * 100.0;
+
+    // Cleaner syllable splits are preferred: fewer syllables covering the same
+    // digits means the boundary is less fragmented.
+    score -= static_cast<double>(syllableCount(candidate.encodedPinyin)) * 10.0;
+
+    // Language model score. wordsScore already accounts for the dictionary
+    // cost, so this is what reuses the existing language model.
+    if (model) {
+        score += static_cast<double>(model->singleWordScore(candidate.word)) * 5.0;
+    }
+
+    // Whole word and phrase bonus. This is an add-on only: it is bounded well
+    // below the match layer and coverage terms, so it cannot lift a partial
+    // match above a complete one. A word of one syllable counts as a phrase
+    // here; the caller decides the actual threshold for "whole word input".
+    const auto syllables = syllableCount(candidate.encodedPinyin);
+    if (syllables > 1) {
+        score += 20.0;
+    }
+    // Long words are slightly preferred over their fragments.
+    score += static_cast<double>(syllables - 1) * 2.0;
+
+    // Lower dictionary cost (more frequent) is better. The range is small
+    // compared with the terms above, so this only breaks ties within a layer.
+    score -= static_cast<double>(candidate.cost);
+
+    return score;
 }
 
 } // namespace
@@ -264,7 +314,8 @@ size_t T9Index::maxQueryLength() { return maxDigits; }
 
 std::vector<T9Index::Match>
 T9Index::query(const libime::PinyinDictionary &dictionary,
-               std::string_view digits, bool prefix, size_t maxResult) const {
+               const libime::LanguageModelBase *model, std::string_view digits,
+               bool prefix, size_t maxResult) const {
     std::vector<Match> result;
     if (digits.empty() || maxResult == 0 || digits.size() > maxDigits) {
         return result;
@@ -284,6 +335,34 @@ T9Index::query(const libime::PinyinDictionary &dictionary,
     std::unordered_set<std::string> seen;
     collect(dictionary, digits, edges, 0, encoded, prefix, maxResult, seen,
             result);
+
+    for (auto &candidate : result) {
+        candidate.score = scoreCandidate(candidate, model);
+    }
+
+    // Match layers outrank every other term, so they are compared first and
+    // the rest only breaks ties inside a layer.
+    std::sort(result.begin(), result.end(),
+              [](const Match &lhs, const Match &rhs) {
+                  if (lhs.matchLevel != rhs.matchLevel) {
+                      return lhs.matchLevel < rhs.matchLevel;
+                  }
+                  if (lhs.remainingDigits != rhs.remainingDigits) {
+                      return lhs.remainingDigits < rhs.remainingDigits;
+                  }
+                  if (lhs.score != rhs.score) {
+                      return lhs.score > rhs.score;
+                  }
+                  // Fully deterministic fallback: no two distinct candidates
+                  // compare equal, so the order is stable across runs.
+                  if (lhs.cost != rhs.cost) {
+                      return lhs.cost < rhs.cost;
+                  }
+                  if (lhs.encodedPinyin != rhs.encodedPinyin) {
+                      return lhs.encodedPinyin < rhs.encodedPinyin;
+                  }
+                  return lhs.word < rhs.word;
+              });
     return result;
 }
 
