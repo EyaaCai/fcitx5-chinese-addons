@@ -5,6 +5,7 @@ set(PINYIN_SOURCES
     workerthread.cpp
     pinyincandidate.cpp
     pinyinenginefactory.cpp
+    t9index.cpp
 )
 
 add_fcitx5_addon(pinyin ${PINYIN_SOURCES})
