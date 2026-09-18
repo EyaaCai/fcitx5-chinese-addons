@@ -855,6 +855,18 @@ PinyinEngine::PinyinEngine(Instance *instance)
         });
     instance_->userInterfaceManager().registerAction("pinyin-prediction",
                                                      &predictionAction_);
+    // Nine key mode. The on-screen keyboard toggles this together with its
+    // layout; it is also listed in the status area so the mode is visible.
+    t9Action_.setShortText(_("Nine key"));
+    t9Action_.setLongText(_("Nine key input (T9)"));
+    t9Action_.setIcon("fcitx-input-keyboard");
+    t9Action_.setCheckable(true);
+    t9Action_.connect<SimpleAction::Activated>([this](InputContext *ic) {
+        setT9(ic, !isT9(ic));
+        t9Action_.setChecked(isT9(ic));
+        t9Action_.update(ic);
+    });
+    instance_->userInterfaceManager().registerAction("pinyin-t9", &t9Action_);
     event_ = instance_->watchEvent(
         EventType::InputContextKeyEvent, EventWatcherPhase::PreInputMethod,
         [this](Event &event) {
@@ -1208,6 +1220,7 @@ void PinyinEngine::activate(const fcitx::InputMethodEntry &entry,
     }
     inputContext->statusArea().addAction(StatusGroup::InputMethod,
                                          &predictionAction_);
+    inputContext->statusArea().addAction(StatusGroup::InputMethod, &t9Action_);
     auto *state = inputContext->propertyFor(&factory_);
     state->context_.setUseShuangpin(entry.uniqueName() == "shuangpin");
     // TODO: use surrouding to re-build context.
@@ -2043,6 +2056,12 @@ void PinyinEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
         return;
     }
 
+    // Nine key mode: digits are input, so this must run before the candidate
+    // list, which would otherwise treat them as selection keys.
+    if (handleT9Digit(event)) {
+        return;
+    }
+
     if (handleCompose(event)) {
         return;
     }
@@ -2341,6 +2360,101 @@ void PinyinEngine::doReset(InputContext *inputContext) const {
     state->keyReleased_ = -1;
     state->keyReleasedIndex_ = -2;
     instance_->resetCompose(inputContext);
+}
+
+bool PinyinEngine::isT9(InputContext *inputContext) const {
+    return inputContext->propertyFor(&factory_)->mode_ == PinyinMode::T9;
+}
+
+void PinyinEngine::setT9(InputContext *inputContext, bool enabled) {
+    auto *state = inputContext->propertyFor(&factory_);
+    if (enabled == (state->mode_ == PinyinMode::T9)) {
+        return;
+    }
+    // doReset() drops any half typed buffer, which must not be reinterpreted
+    // under the new mode, and puts the mode back to Normal.
+    doReset(inputContext);
+    if (enabled) {
+        state->mode_ = PinyinMode::T9;
+        // Let InputBuffer enforce the digit limit instead of duplicating the
+        // check here; a full buffer simply refuses further input.
+        state->context_.setMaxSize(maxT9Length);
+    } else {
+        state->context_.setMaxSize(0);
+    }
+}
+
+bool PinyinEngine::handleT9Digit(KeyEvent &event) {
+    auto *inputContext = event.inputContext();
+    auto *state = inputContext->propertyFor(&factory_);
+    if (state->mode_ != PinyinMode::T9) {
+        return false;
+    }
+    const auto chr = Key::keySymToUnicode(event.key().sym());
+    if (chr < '2' || chr > '9') {
+        return false;
+    }
+    event.filterAndAccept();
+    // type() returns false once the buffer is full, which drops the key.
+    if (state->context_.type(std::string(1, static_cast<char>(chr)))) {
+        updateT9UI(inputContext);
+    }
+    return true;
+}
+
+void PinyinEngine::updateT9UI(InputContext *inputContext) {
+    auto *state = inputContext->propertyFor(&factory_);
+    inputContext->inputPanel().reset();
+
+    const auto &digits = state->context_.userInput();
+    if (digits.empty()) {
+        inputContext->updatePreedit();
+        inputContext->updateUserInterface(UserInterfaceComponent::InputPanel);
+        return;
+    }
+
+    // Digits are not a valid pinyin preedit, so show them directly.
+    if (inputContext->capabilityFlags().test(CapabilityFlag::Preedit)) {
+        Text preedit;
+        preedit.append(digits);
+        preedit.setCursor(preedit.textLength());
+        inputContext->inputPanel().setClientPreedit(preedit);
+    }
+    {
+        Text preedit;
+        preedit.append(digits);
+        preedit.setCursor(preedit.textLength());
+        inputContext->inputPanel().setPreedit(preedit);
+    }
+
+    auto candidateList = std::make_unique<CommonCandidateList>();
+    candidateList->setPageSize(*config_.pageSize);
+    candidateList->setCursorPositionAfterPaging(
+        CursorPositionAfterPaging::ResetToFirst);
+
+    // Prefix matching keeps candidates visible while the user is still typing,
+    // which is what makes single key prediction usable.
+    const auto matches =
+        t9Index_.query(*ime_->dict(), ime_->model(), digits, true, 100);
+    for (const auto &match : matches) {
+        candidateList->append<PinyinT9CandidateWord>(this, match.word,
+                                                     match.encodedPinyin);
+    }
+
+    if (candidateList->empty()) {
+        inputContext->updatePreedit();
+        inputContext->updateUserInterface(UserInterfaceComponent::InputPanel);
+        return;
+    }
+
+    candidateList->setCursorIncludeUnselected(false);
+    candidateList->setCursorKeepInSamePage(false);
+    candidateList->setGlobalCursorIndex(0);
+    // Digits are input in this mode, so they must not double as selection keys.
+    candidateList->setSelectionKey(KeyList{});
+    inputContext->inputPanel().setCandidateList(std::move(candidateList));
+    inputContext->updatePreedit();
+    inputContext->updateUserInterface(UserInterfaceComponent::InputPanel);
 }
 
 void PinyinEngine::save() {

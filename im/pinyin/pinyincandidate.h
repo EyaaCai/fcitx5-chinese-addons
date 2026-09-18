@@ -133,6 +133,30 @@ private:
     std::string word_;
 };
 
+/**
+ * A nine key candidate.
+ *
+ * The candidate carries the pinyin the engine matched, so selecting it can
+ * hand that encoding back to the context. Reusing the context's own selection
+ * path is what keeps word learning and prediction working the same way as for
+ * a normal pinyin candidate.
+ */
+class PinyinT9CandidateWord : public CandidateWord {
+public:
+    PinyinT9CandidateWord(PinyinEngine *engine, std::string word,
+                          std::string encodedPinyin);
+
+    void select(InputContext *inputContext) const override;
+
+    const std::string &word() const { return word_; }
+    const std::string &encodedPinyin() const { return encodedPinyin_; }
+
+private:
+    PinyinEngine *engine_;
+    std::string word_;
+    std::string encodedPinyin_;
+};
+
 class ForgetCandidateWord : public CandidateWord {
 public:
     ForgetCandidateWord(PinyinEngine *engine, Text text, size_t index);

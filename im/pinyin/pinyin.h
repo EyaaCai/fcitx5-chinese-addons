@@ -9,6 +9,7 @@
 
 #include "customphrase.h"
 #include "symboldictionary.h"
+#include "t9index.h"
 #include "workerthread.h"
 #include <cstddef>
 #include <cstdint>
@@ -373,7 +374,14 @@ struct EventSourceTime;
 class CandidateList;
 class PinyinEngine;
 
-enum class PinyinMode { Normal, StrokeFilter, ForgetCandidate, Punctuation };
+enum class PinyinMode {
+    Normal,
+    StrokeFilter,
+    ForgetCandidate,
+    Punctuation,
+    /// Nine key input: the buffer holds keypad digits rather than pinyin.
+    T9
+};
 
 class PinyinState : public InputContextProperty {
 public:
@@ -452,6 +460,26 @@ public:
     void deleteCustomPhrase(InputContext *inputContext,
                             const std::string &customPhrase);
 
+    /// Number of digits kept per keypad input, see T9Index::maxQueryLength.
+    static constexpr size_t maxT9Length = 32;
+
+    /// Whether the context is currently in nine key mode.
+    bool isT9(InputContext *inputContext) const;
+
+    /// Switch a context into or out of nine key mode. Exposed so that the
+    /// on-screen keyboard can drive the mode together with its layout.
+    void setT9(InputContext *inputContext, bool enabled);
+
+    /**
+     * Handle one keypad digit while in nine key mode.
+     *
+     * @return true when the key was consumed.
+     */
+    bool handleT9Digit(KeyEvent &event);
+
+    /// Publish the candidates for the current digit buffer.
+    void updateT9UI(InputContext *inputContext);
+
     FCITX_ADDON_DEPENDENCY_LOADER(cloudpinyin, instance_->addonManager());
 
     const auto &selectionKeys() const { return selectionKeys_; }
@@ -512,6 +540,10 @@ private:
     KeyList numpadSelectionKeys_;
     FactoryFor<PinyinState> factory_;
     SimpleAction predictionAction_;
+    /// Toggles nine key mode; also driven by the on-screen keyboard.
+    SimpleAction t9Action_;
+    /// Nine key support, only queried while a context is in PinyinMode::T9.
+    T9Index t9Index_;
     libime::PinyinPrediction prediction_;
     std::unique_ptr<EventSource> deferEvent_;
     std::unique_ptr<EventSource> deferredPreload_;

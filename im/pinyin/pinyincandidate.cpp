@@ -230,6 +230,25 @@ void PinyinPunctuationCandidateWord::select(InputContext *inputContext) const {
     engine_->doReset(inputContext);
 }
 
+PinyinT9CandidateWord::PinyinT9CandidateWord(PinyinEngine *engine,
+                                             std::string word,
+                                             std::string encodedPinyin)
+    : engine_(engine), word_(std::move(word)),
+      encodedPinyin_(std::move(encodedPinyin)) {
+    setText(Text(word_));
+}
+
+void PinyinT9CandidateWord::select(InputContext *inputContext) const {
+    auto *state = inputContext->propertyFor(&engine_->factory());
+    auto &context = state->context_;
+    // The whole digit buffer stands for this candidate.
+    auto segmentLength = context.size() - context.selectedLength();
+    context.selectCustom(segmentLength, word_, encodedPinyin_);
+    // updateUI sees a fully selected context and commits it, which also runs
+    // the usual word learning.
+    engine_->updateUI(inputContext);
+}
+
 ForgetCandidateWord::ForgetCandidateWord(PinyinEngine *engine, Text text,
                                          size_t index)
     : engine_(engine), index_(index) {
