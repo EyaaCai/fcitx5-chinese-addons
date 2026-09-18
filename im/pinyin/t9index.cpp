@@ -156,25 +156,27 @@ void collect(const libime::PinyinDictionary &dictionary, std::string_view digits
     if (result.size() >= maxResult) {
         return;
     }
-    auto append = [&](std::string_view encodedPinyin, std::string_view word,
+    auto append = [&, pathLen = encoded.size()](
+                      std::string_view encodedPinyin, std::string_view word,
                       float cost) {
         if (result.size() >= maxResult) {
             return false;
         }
-        // A partial match must be a whole number of syllables, otherwise 64
-        // would also "match" 644 (ni -> ni'...). The pinyin part stops at the
-        // separator that precedes the word, so an even length means the match
-        // ended exactly on a syllable boundary.
-        if (encodedPinyin.size() < encoded.size() ||
-            (prefix && encodedPinyin.size() % 2 != 0)) {
+        // The lookup is done from the trie root, so the callback hands back the
+        // whole key. It must start with the pinyin that was actually looked up,
+        // otherwise a longer entry whose opening syllable merely coincides with
+        // the path so far would be accepted for a shorter input.
+        auto path = std::string_view(encoded).substr(0, pathLen);
+        if (encodedPinyin.size() < pathLen ||
+            encodedPinyin.substr(0, pathLen) != path) {
             return true;
         }
-        // Either the whole sequence matched, or, when prefix matching is on, a
-        // longer entry whose start is exactly the pinyin that was looked up.
-        if (encodedPinyin.substr(0, encoded.size()) != encoded) {
+        // A partial match must end on a syllable boundary, i.e. at an even
+        // offset. Otherwise 64 would also "match" 644 (ni -> ni'...).
+        if (prefix && encodedPinyin.size() % 2 != 0) {
             return true;
         }
-        if (!prefix && encodedPinyin.size() != encoded.size()) {
+        if (!prefix && encodedPinyin.size() != pathLen) {
             return true;
         }
         auto key = dedupKey(std::string(encodedPinyin), std::string(word));
